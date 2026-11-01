@@ -13,6 +13,7 @@
   const sum = (arr, f = (x) => x) => arr.reduce((a, x) => a + (f(x) || 0), 0);
 
   /* ================= Справочники ================= */
+  const APP_VERSION = '1.1';
   const STORAGE_KEY = 'seafin-data-v1';
   const CURRENCIES = {
     USD: { symbol: '$', name: 'Доллар США' },
@@ -1010,7 +1011,7 @@
         ${card('Пример и очистка', '', `
           <div class="btn-row"><button class="btn" data-action="demo">Загрузить пример данных</button><button class="btn danger" data-action="reset">Удалить все данные</button></div>
           <p class="hint mt">Пример заменит текущие данные — сначала сохраните копию, если уже что-то вносили.</p>`)}
-        ${card('Как пользоваться', '', `<ol class="steps small">
+        ${card('Как пользоваться', `версия приложения ${APP_VERSION}`, `<ol class="steps small">
           <li>В начале месяца откройте «Доходы и расходы» → «Внести месяц». Укажите итоговые суммы за прошлый месяц.</li>
           <li>Обновите стоимость инвестиций и имущества, если она изменилась.</li>
           <li>Капитал на «Обзоре» сохраняется автоматически раз в месяц — так строится график роста.</li>
@@ -1356,6 +1357,7 @@
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { applyTheme(); render(); });
 
   /* ================= Старт ================= */
+  $('#appVersion').textContent = 'Версия ' + APP_VERSION;
   applyTheme();
   if (state.assets.length || state.investments.length || state.debts.length) save(); // снимок капитала за текущий месяц
   render();
