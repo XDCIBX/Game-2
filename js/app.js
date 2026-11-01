@@ -13,7 +13,7 @@
   const sum = (arr, f = (x) => x) => arr.reduce((a, x) => a + (f(x) || 0), 0);
 
   /* ================= Справочники ================= */
-  const APP_VERSION = '1.2';
+  const APP_VERSION = '1.3';
   const STORAGE_KEY = 'seafin-data-v1';
   const CURRENCIES = {
     USD: { symbol: '$', name: 'Доллар США' },
@@ -492,7 +492,7 @@
         ${kpi('Чистый капитал', fmt(nw), nwDelta != null ? `<span class="${tone(nwDelta)}">${fmtSigned(nwDelta)}</span> с прошлого снимка` : 'имущество + инвестиции ± долги', 'hero')}
         ${kpi(`Доходы ${periodLabel(ui.period)}`, fmt(income), filled ? `внесено месяцев: ${filled}` : 'нет данных')}
         ${kpi(`Расходы ${periodLabel(ui.period)}`, fmt(expense), filled ? `в среднем ${fmt(expense / filled)} в месяц` : 'нет данных')}
-        ${kpi('Удалось отложить', `<span class="${tone(saved)}">${fmtSigned(saved)}</span>`, savingsRate != null ? `это ${fmtPct(savingsRate)} от доходов` : '')}
+        ${kpi('В распоряжении', `<span class="${tone(saved)}">${fmtSigned(saved)}</span>`, savingsRate != null ? `это ${fmtPct(savingsRate)} от доходов` : '')}
         ${kpi('Финансовая подушка', runway != null ? `${nf0.format(Math.floor(runway))} мес.` : '—', runway != null ? `столько можно прожить на берегу на сбережения (${fmtCompact(liquid)})` : 'нужны данные о расходах и сбережениях')}
       </div>
       <div class="section-head"><h2>Динамика</h2>${periodPicker()}</div>
