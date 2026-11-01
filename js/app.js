@@ -22,22 +22,10 @@
   const S = (n) => `var(--series-${n})`;
 
   const INCOME_CATS = [
-    { key: 'salary', name: 'Зарплата по контракту' },
-    { key: 'bonus', name: 'Бонусы и премии' },
-    { key: 'passive', name: 'Проценты, дивиденды, аренда' },
-    { key: 'other', name: 'Прочие доходы' },
+    { key: 'salary', name: 'Зарплата по контракту', short: 'Зарплата', color: S(1) },
+    { key: 'passive', name: 'Проценты, дивиденды, аренда', short: 'Проценты и аренда', color: S(3) },
+    { key: 'other', name: 'Прочие доходы', short: 'Прочие доходы', color: S(4) },
   ];
-  const EXPENSE_CATS = [
-    { key: 'housing', name: 'Жильё и коммуналка' },
-    { key: 'food', name: 'Продукты и быт' },
-    { key: 'family', name: 'Семья и дети' },
-    { key: 'transport', name: 'Авто и транспорт' },
-    { key: 'health', name: 'Здоровье' },
-    { key: 'docs', name: 'Документы, курсы, крюинг' },
-    { key: 'leisure', name: 'Отдых и покупки' },
-    { key: 'other', name: 'Прочее (связь, подарки…)' },
-  ];
-  EXPENSE_CATS.forEach((c, i) => (c.color = S(i + 1)));
 
   const ASSET_TYPES = {
     real: ['Квартира', 'Дом', 'Земельный участок', 'Гараж / паркинг', 'Коммерческая недвижимость', 'Другое'],
@@ -101,6 +89,21 @@
     s.settings.rates.USD = 1;
     ['months', 'contracts', 'assets', 'debts', 'investments'].forEach((k) => { if (!Array.isArray(s[k])) s[k] = []; });
     if (!s.snapshots || typeof s.snapshots !== 'object') s.snapshots = {};
+    // Переход со старого формата: бонусы входят в зарплату, расходы по категориям — в одну общую сумму
+    s.months.forEach((m) => {
+      m.income = m.income || {};
+      m.expense = m.expense || {};
+      if ('bonus' in m.income) {
+        const total = num(m.income.salary) + num(m.income.bonus);
+        delete m.income.bonus;
+        if (total) m.income.salary = total;
+      }
+      const old = Object.keys(m.expense).filter((k) => k !== 'total');
+      if (old.length) {
+        const total = num(m.expense.total) + sum(old, (k) => num(m.expense[k]));
+        m.expense = total ? { total } : {};
+      }
+    });
     if (!CURRENCIES[s.settings.currency]) s.settings.currency = 'USD';
     return s;
   }
@@ -212,11 +215,11 @@
 
   /* ================= Расчёты ================= */
   function monthTotals(m) {
-    const inc = {}, exp = {};
-    let income = 0, expense = 0;
+    const inc = {};
+    let income = 0;
     INCOME_CATS.forEach((c) => { const v = conv(m.income && m.income[c.key], m.incomeCur); inc[c.key] = v; income += v; });
-    EXPENSE_CATS.forEach((c) => { const v = conv(m.expense && m.expense[c.key], m.expenseCur); exp[c.key] = v; expense += v; });
-    return { inc, exp, income, expense, balance: income - expense };
+    const expense = conv(m.expense && m.expense.total, m.expenseCur);
+    return { inc, income, expense, balance: income - expense };
   }
   const monthsMap = () => Object.fromEntries(state.months.map((m) => [m.id, m]));
   const sortedMonths = () => [...state.months].sort((a, b) => (a.id < b.id ? 1 : -1));
@@ -401,7 +404,7 @@
       <h2>Добро пожаловать в «Морской бюджет»</h2>
       <p>Простой учёт денег для моряка на контрактах. Не нужно записывать каждую покупку — <b>достаточно раз в месяц</b> внести итоговые доходы и расходы.</p>
       <ol class="steps">
-        <li><b>Раз в месяц</b> внесите доходы и расходы по крупным категориям.</li>
+        <li><b>Раз в месяц</b> внесите доходы и общую сумму расходов за месяц.</li>
         <li>Добавьте <b>контракты</b>, <b>имущество</b> и <b>инвестиции</b> — крипту, депозиты, сбережения.</li>
         <li>Смотрите диаграммы и капитал в долларах, гривнах или леях.</li>
       </ol>
@@ -447,8 +450,11 @@
         label: 'Доходы и расходы по месяцам',
         empty: 'Внесите итоги хотя бы одного месяца',
       });
-      const expCats = EXPENSE_CATS.map((c) => ({ name: c.name, color: c.color, value: sum(rows, (r) => r.t && r.t.exp[c.key]) }));
-      Charts.hbars($('#c-exp'), { items: expCats, fmt: (v) => fmt(v), share: true, empty: 'Нет расходов за период' });
+      Charts.donut($('#c-src'), {
+        items: INCOME_CATS.map((c) => ({ name: c.short, color: c.color, value: sum(rows, (r) => r.t && r.t.inc[c.key]) })),
+        fmt: (v) => fmt(v), fmtCenter: (v) => fmtCompact(v), centerLabel: 'доходы',
+        empty: 'Нет доходов за период',
+      });
       Charts.line($('#c-nw'), {
         labels: snapKeys.map((k) => monthLabel(k)),
         titles: snapKeys.map((k) => monthLabel(k, true)),
@@ -485,7 +491,7 @@
       <div class="section-head"><h2>Динамика</h2>${periodPicker()}</div>
       <div class="grid-2">
         ${card('Доходы и расходы по месяцам', `в ${cur()} · наведите на месяц, чтобы увидеть детали`, chartBox('c-ie'), '', 'span-2')}
-        ${card('На что уходят деньги', `структура расходов ${periodLabel(ui.period)}`, chartBox('c-exp'))}
+        ${card('Откуда деньги', `источники дохода ${periodLabel(ui.period)}`, chartBox('c-src'))}
         ${card('Распределение активов', 'где лежат ваши деньги сейчас', chartBox('c-alloc'))}
         ${card('Чистый капитал во времени', 'снимок сохраняется автоматически каждый месяц', chartBox('c-nw'), '', 'span-2')}
       </div>`;
@@ -497,13 +503,19 @@
     const map = monthsMap();
     const rows = keys.map((k) => ({ k, t: map[k] ? monthTotals(map[k]) : null }));
     later(() => {
-      Charts.bars($('#c-cats'), {
+      const filled = rows.filter((r) => r.t);
+      const avgExp = filled.length ? sum(filled, (r) => r.t.expense) / filled.length : 0;
+      Charts.bars($('#c-spend'), {
         labels: keys.map((k) => monthLabel(k)),
-        titles: keys.map((k) => monthLabel(k, true)),
-        stacked: true,
-        series: EXPENSE_CATS.map((c) => ({ name: c.name, color: c.color, values: rows.map((r) => (r.t ? r.t.exp[c.key] : 0)) })),
-        fmt: (v) => fmt(v), fmtAxis, height: 280,
-        label: 'Расходы по категориям',
+        titles: keys.map((k) => monthLabel(k, true) + (map[k] ? (map[k].status === 'sea' ? ' · в рейсе' : ' · на берегу') : ' · нет данных')),
+        series: [{ name: 'Расходы', color: S(2), values: rows.map((r) => (r.t ? r.t.expense : 0)) }],
+        fmt: (v) => fmt(v), fmtAxis, height: 260,
+        extra: (ix) => {
+          if (!rows[ix].t || !avgExp) return '';
+          const d = rows[ix].t.expense - avgExp;
+          return `<div class="tt-sep"></div><div class="tt-row"><span class="n">Среднее</span><b>${fmt(avgExp)}</b></div><div class="tt-row"><span class="n">Разница</span><b>${fmtSigned(d)}</b></div>`;
+        },
+        label: 'Расходы по месяцам',
         empty: 'Нет расходов за выбранный период',
       });
       let acc = 0;
@@ -553,7 +565,7 @@
       </div>
       <div class="section-head"><h2>Диаграммы</h2>${periodPicker()}</div>
       <div class="grid-2">
-        ${card('Расходы по категориям', `по месяцам, в ${cur()}`, chartBox('c-cats'), '', 'span-2')}
+        ${card('Расходы по месяцам', `${periodLabel(ui.period)}, в ${cur()} · наведите на месяц, чтобы сравнить со средним`, chartBox('c-spend'), '', 'span-2')}
         ${card('Накопленные сбережения', `сумма остатков ${periodLabel(ui.period)}`, chartBox('c-cum'))}
         ${card('Рейс или берег', 'средний месяц в море и дома', chartBox('c-seashore'))}
       </div>
@@ -581,7 +593,7 @@
       income: {}, expense: {}, note: '',
     };
 
-    const inputs = (cats, group) => cats.map((c) => `<label class="field"><span>${c.color ? `<i class="legend-swatch" style="background:${c.color}"></i>` : ''}${c.name}</span><input name="${group}_${c.key}" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(m[group][c.key] ?? '')}"></label>`).join('');
+    const inputs = (cats, group) => cats.map((c) => `<label class="field"><span>${c.name}</span><input name="${group}_${c.key}" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(m[group][c.key] ?? '')}"></label>`).join('');
     const body = `
       <div class="form-grid">
         <label class="field"><span>Месяц</span><input type="month" name="id" required value="${m.id}"></label>
@@ -598,7 +610,7 @@
       </div>
       <div class="group">
         <div class="group-head"><h4>Расходы</h4><label class="inline">Валюта <select name="expenseCur">${curOptions(m.expenseCur)}</select></label></div>
-        <div class="form-grid">${inputs(EXPENSE_CATS, 'expense')}</div>
+        <div class="form-grid"><label class="field full"><span>Все расходы за месяц</span><input name="expense_total" inputmode="decimal" autocomplete="off" placeholder="0" value="${esc(m.expense.total ?? '')}"><small class="hint">Одна общая сумма: сколько всего потрачено за месяц</small></label></div>
       </div>
       <label class="field full mt"><span>Заметка (необязательно)</span><textarea name="note" rows="2" placeholder="Например: ремонт машины, отпуск, продление документов">${esc(m.note || '')}</textarea></label>
       <div class="form-summary" id="msum"></div>`;
@@ -611,7 +623,8 @@
           const fd = new FormData(form);
           const r = { id: fd.get('id'), status: m.status, incomeCur: fd.get('incomeCur'), expenseCur: fd.get('expenseCur'), income: {}, expense: {}, note: String(fd.get('note') || '').trim() };
           INCOME_CATS.forEach((c) => { const v = String(fd.get('income_' + c.key) || '').trim(); if (v) r.income[c.key] = num(v); });
-          EXPENSE_CATS.forEach((c) => { const v = String(fd.get('expense_' + c.key) || '').trim(); if (v) r.expense[c.key] = num(v); });
+          const exp = String(fd.get('expense_total') || '').trim();
+          if (exp) r.expense.total = num(exp);
           return r;
         };
         const summary = () => {
@@ -633,9 +646,8 @@
         }));
         const copyBtn = $('[data-copy]', form);
         if (copyBtn) copyBtn.addEventListener('click', () => {
-          [['income', INCOME_CATS], ['expense', EXPENSE_CATS]].forEach(([g, cats]) => cats.forEach((c) => {
-            form.elements[`${g}_${c.key}`].value = prev[g][c.key] ?? '';
-          }));
+          INCOME_CATS.forEach((c) => { form.elements[`income_${c.key}`].value = prev.income[c.key] ?? ''; });
+          form.elements.expense_total.value = prev.expense.total ?? '';
           form.elements.incomeCur.value = prev.incomeCur;
           form.elements.expenseCur.value = prev.expenseCur;
           summary();
@@ -1218,19 +1230,11 @@
         id: k, status: sea ? 'sea' : 'shore', incomeCur: 'USD', expenseCur: 'UAH',
         income: {
           salary: Math.round(salary / 10) * 10,
-          ...(sea && rnd() < 0.3 ? { bonus: r100(300, 900) } : {}),
           ...(k >= '2026-02' ? { passive: Math.round(35 + rnd() * 25) } : {}),
           ...(!sea && rnd() < 0.3 ? { other: r100(200, 600) } : {}),
         },
         expense: {
-          housing: r100(7500, 9500) + (winter ? 4500 : 0),
-          food: r100(20000, 25000) + (sea ? 0 : 9000),
-          family: r100(14000, 20000),
-          transport: sea ? r100(2500, 4500) : r100(7000, 11000),
-          health: rnd() < 0.3 ? r100(4000, 12000) : r100(800, 2000),
-          docs: nextStart ? r100(18000, 28000) : 0,
-          leisure: sea ? r100(4000, 8000) : r100(15000, 30000),
-          other: r100(3000, 5500) + (sea ? 1500 : 0),
+          total: r100(52000, 64000) + (winter ? 4500 : 0) + (sea ? 0 : r100(30000, 50000)) + (nextStart ? r100(18000, 28000) : 0) + (rnd() < 0.3 ? r100(4000, 12000) : 0),
         },
         note: k === '2025-08' ? 'Отпуск с семьёй' : k === '2026-06' ? 'Медкомиссия, продление сертификатов' : '',
       });
