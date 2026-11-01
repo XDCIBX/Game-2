@@ -13,7 +13,7 @@
   const sum = (arr, f = (x) => x) => arr.reduce((a, x) => a + (f(x) || 0), 0);
 
   /* ================= Справочники ================= */
-  const APP_VERSION = '1.1';
+  const APP_VERSION = '1.2';
   const STORAGE_KEY = 'seafin-data-v1';
   const CURRENCIES = {
     USD: { symbol: '$', name: 'Доллар США' },
@@ -263,8 +263,13 @@
 
   const totalAssets = (to = cur(), kind) => sum(state.assets.filter((a) => !kind || a.kind === kind), (a) => conv(a.value, a.currency, to));
   const totalInvest = (to = cur()) => sum(state.investments, (i) => invValue(i, to));
-  const totalDebts = (to = cur()) => sum(state.debts, (d) => conv(d.amount, d.currency, to));
-  const netWorth = (to = cur()) => totalAssets(to) + totalInvest(to) - totalDebts(to);
+  const isOwed = (d) => d.direction === 'owed'; // мне должны
+  const myDebts = () => state.debts.filter((d) => !isOwed(d));
+  const owedToMe = () => state.debts.filter(isOwed);
+  const totalDebts = (to = cur()) => sum(myDebts(), (d) => conv(d.amount, d.currency, to));
+  const totalOwed = (to = cur()) => sum(owedToMe(), (d) => conv(d.amount, d.currency, to));
+  const netWorth = (to = cur()) => totalAssets(to) + totalInvest(to) + totalOwed(to) - totalDebts(to);
+  const snapWorth = (s) => s.a + s.i + (s.r || 0) - s.d;
 
   function avgMonthlyExpense() {
     const last = sortedMonths().slice(0, 12);
@@ -276,7 +281,7 @@
     const hasAny = state.assets.length || state.investments.length || state.debts.length;
     const k = monthKey();
     if (!hasAny && !state.snapshots[k]) return;
-    state.snapshots[k] = { a: Math.round(totalAssets('USD')), i: Math.round(totalInvest('USD')), d: Math.round(totalDebts('USD')) };
+    state.snapshots[k] = { a: Math.round(totalAssets('USD')), i: Math.round(totalInvest('USD')), r: Math.round(totalOwed('USD')), d: Math.round(totalDebts('USD')) };
   }
 
   function contractDates(c) {
@@ -436,7 +441,7 @@
 
     const snapKeys = Object.keys(state.snapshots).sort();
     const prevSnap = snapKeys.length > 1 ? state.snapshots[snapKeys[snapKeys.length - 2]] : null;
-    const prevNw = prevSnap ? conv(prevSnap.a + prevSnap.i - prevSnap.d, 'USD') : null;
+    const prevNw = prevSnap ? conv(snapWorth(prevSnap), 'USD') : null;
 
     later(() => {
       Charts.bars($('#c-ie'), {
@@ -459,9 +464,9 @@
       Charts.line($('#c-nw'), {
         labels: snapKeys.map((k) => monthLabel(k)),
         titles: snapKeys.map((k) => monthLabel(k, true)),
-        series: [{ name: 'Чистый капитал', color: S(1), values: snapKeys.map((k) => { const s = state.snapshots[k]; return conv(s.a + s.i - s.d, 'USD'); }) }],
+        series: [{ name: 'Чистый капитал', color: S(1), values: snapKeys.map((k) => { const s = state.snapshots[k]; return conv(snapWorth(s), 'USD'); }) }],
         area: true, fmt: (v) => fmt(v), fmtAxis, zero: false,
-        extra: (i) => { const s = state.snapshots[snapKeys[i]]; return '<div class="tt-sep"></div>' + `<div class="tt-row"><span class="n">Имущество</span><b>${fmt(conv(s.a, 'USD'))}</b></div><div class="tt-row"><span class="n">Инвестиции</span><b>${fmt(conv(s.i, 'USD'))}</b></div><div class="tt-row"><span class="n">Долги</span><b>${fmt(-conv(s.d, 'USD'))}</b></div>`; },
+        extra: (i) => { const s = state.snapshots[snapKeys[i]]; return '<div class="tt-sep"></div>' + `<div class="tt-row"><span class="n">Имущество</span><b>${fmt(conv(s.a, 'USD'))}</b></div><div class="tt-row"><span class="n">Инвестиции</span><b>${fmt(conv(s.i, 'USD'))}</b></div>${s.r ? `<div class="tt-row"><span class="n">Мне должны</span><b>${fmt(conv(s.r, 'USD'))}</b></div>` : ''}<div class="tt-row"><span class="n">Я должен</span><b>${fmt(-conv(s.d, 'USD'))}</b></div>`; },
         empty: 'История появится после добавления имущества или инвестиций',
       });
       const inv = (t) => sum(state.investments.filter((i) => i.type === t), (i) => invValue(i));
@@ -473,6 +478,7 @@
           { name: 'Депозиты', value: inv('deposit'), color: INV_TYPES.deposit.color },
           { name: 'Акции и фонды', value: inv('stocks'), color: INV_TYPES.stocks.color },
           { name: 'Сбережения и прочее', value: inv('cash') + inv('other'), color: INV_TYPES.cash.color },
+          { name: 'Мне должны', value: totalOwed(), color: S(7) },
         ],
         fmt: (v) => fmt(v), fmtCenter: (v) => fmtCompact(v), centerLabel: 'активы',
         empty: 'Добавьте имущество или инвестиции',
@@ -483,7 +489,7 @@
     return `
       ${statusBanner()}
       <div class="kpis">
-        ${kpi('Чистый капитал', fmt(nw), nwDelta != null ? `<span class="${tone(nwDelta)}">${fmtSigned(nwDelta)}</span> с прошлого снимка` : 'имущество + инвестиции − долги', 'hero')}
+        ${kpi('Чистый капитал', fmt(nw), nwDelta != null ? `<span class="${tone(nwDelta)}">${fmtSigned(nwDelta)}</span> с прошлого снимка` : 'имущество + инвестиции ± долги', 'hero')}
         ${kpi(`Доходы ${periodLabel(ui.period)}`, fmt(income), filled ? `внесено месяцев: ${filled}` : 'нет данных')}
         ${kpi(`Расходы ${periodLabel(ui.period)}`, fmt(expense), filled ? `в среднем ${fmt(expense / filled)} в месяц` : 'нет данных')}
         ${kpi('Удалось отложить', `<span class="${tone(saved)}">${fmtSigned(saved)}</span>`, savingsRate != null ? `это ${fmtPct(savingsRate)} от доходов` : '')}
@@ -768,7 +774,7 @@
   function viewAssets() {
     const real = state.assets.filter((a) => a.kind === 'real');
     const mov = state.assets.filter((a) => a.kind === 'movable');
-    const totReal = totalAssets(cur(), 'real'), totMov = totalAssets(cur(), 'movable'), totDebt = totalDebts();
+    const totReal = totalAssets(cur(), 'real'), totMov = totalAssets(cur(), 'movable'), totDebt = totalDebts(), totOwed = totalOwed();
 
     const assetRow = (a) => {
       const v = conv(a.value, a.currency);
@@ -786,12 +792,29 @@
         : `<div class="empty-block">${kind === 'real' ? 'Квартира, дом, участок, гараж…' : 'Автомобиль, лодка, техника, украшения…'}</div>`,
       `<button class="btn small" data-action="add-asset" data-v="${kind}">${icon('plus')} Добавить</button>`);
 
-    const debts = card('Долги и кредиты', state.debts.length ? `итого ${fmt(totDebt)} — вычитаются из капитала` : 'кредиты, рассрочки, долги друзьям',
-      state.debts.length ? `<div class="list">${state.debts.map((d) => `<button type="button" class="item" data-action="edit-debt" data-id="${d.id}">
-          <div class="item-main"><div class="item-title">${esc(d.name)}</div><div class="item-sub">${num(d.payment) ? `платёж ${fmt(num(d.payment), d.currency)} в месяц` : ''}${d.note ? ` · ${esc(d.note)}` : ''}</div></div>
-          <div class="item-side"><div class="item-value neg">${fmt(-conv(d.amount, d.currency))}</div><div class="item-sub">${d.currency !== cur() ? fmt(num(d.amount), d.currency) : ''}</div></div></button>`).join('')}</div>`
-        : '<div class="empty-block">Долгов нет — отлично!</div>',
-      `<button class="btn small" data-action="add-debt">${icon('plus')} Добавить</button>`);
+    const debtRow = (d) => {
+      const owed = isOwed(d);
+      const due = parseDate(d.due);
+      const overdue = due && due < today();
+      const parts = [];
+      if (num(d.payment)) parts.push(`${owed ? 'возвращают' : 'платёж'} ${fmt(num(d.payment), d.currency)} в месяц`);
+      if (due) parts.push(overdue ? `<b class="neg">срок прошёл ${fmtDate(d.due)}</b>` : `вернуть до ${fmtDate(d.due)}`);
+      if (d.note) parts.push(esc(d.note));
+      return `<button type="button" class="item" data-action="edit-debt" data-id="${d.id}">
+          <div class="item-main"><div class="item-title">${esc(d.name)}</div><div class="item-sub">${parts.join(' · ')}</div></div>
+          <div class="item-side"><div class="item-value ${owed ? 'pos' : 'neg'}">${owed ? fmtSigned(conv(d.amount, d.currency)) : fmt(-conv(d.amount, d.currency))}</div><div class="item-sub">${d.currency !== cur() ? fmt(num(d.amount), d.currency) : ''}</div></div></button>`;
+    };
+    const debtCard = (dir) => {
+      const owed = dir === 'owed';
+      const items = owed ? owedToMe() : myDebts();
+      const total = owed ? totOwed : totDebt;
+      return card(owed ? 'Мне должны' : 'Я должен',
+        items.length ? `итого ${fmt(total)} — ${owed ? 'прибавляются к капиталу' : 'вычитаются из капитала'}` : owed ? 'деньги, которые вы дали в долг' : 'кредиты, рассрочки, займы',
+        items.length ? `<div class="list">${items.sort((a, b) => conv(b.amount, b.currency) - conv(a.amount, a.currency)).map(debtRow).join('')}</div>`
+          : `<div class="empty-block">${owed ? 'Никто не должен. Если дадите кому-то в долг — запишите здесь, чтобы не забыть.' : 'Долгов нет — отлично!'}</div>`,
+        `<button class="btn small" data-action="add-debt" data-v="${dir}">${icon('plus')} Добавить</button>`);
+    };
+    const debts = `<div class="grid-2">${debtCard('owe')}${debtCard('owed')}</div>`;
 
     later(() => {
       Charts.hbars($('#c-assets'), {
@@ -810,7 +833,8 @@
         ${kpi('Всё имущество', fmt(totReal + totMov), `${state.assets.length} ${plural(state.assets.length, 'объект', 'объекта', 'объектов')}`, 'hero')}
         ${kpi('Недвижимое', fmt(totReal), `${real.length} шт.`)}
         ${kpi('Движимое', fmt(totMov), `${mov.length} шт.`)}
-        ${kpi('Долги', totDebt ? `<span class="neg">${fmt(-totDebt)}</span>` : fmt(0), state.debts.length ? `ежемесячно ${fmt(sum(state.debts, (d) => conv(d.payment, d.currency)))}` : 'нет долгов')}
+        ${kpi('Я должен', totDebt ? `<span class="neg">${fmt(-totDebt)}</span>` : fmt(0), myDebts().length ? `платежи ${fmt(sum(myDebts(), (d) => conv(d.payment, d.currency)))} в месяц` : 'нет долгов')}
+        ${kpi('Мне должны', totOwed ? `<span class="pos">${fmtSigned(totOwed)}</span>` : fmt(0), owedToMe().length ? `${owedToMe().length} ${plural(owedToMe().length, 'человек', 'человека', 'человек')}` : 'никто не должен')}
       </div>
       <div class="grid-2 asset-charts">
         ${card('Стоимость объектов', 'оценочная рыночная стоимость сейчас', chartBox('c-assets'))}
@@ -848,19 +872,28 @@
     });
   }
 
-  function openDebtForm(id) {
+  function openDebtForm(id, dir) {
     const d = id ? state.debts.find((x) => x.id === id) : null;
+    const start = d ? (isOwed(d) ? 'owed' : 'owe') : dir === 'owed' ? 'owed' : 'owe';
     openForm({
-      title: d ? 'Долг / кредит' : 'Новый долг или кредит',
-      data: d || { currency: cur() },
-      fields: [
-        { key: 'name', label: 'Название', placeholder: 'Например: Кредит на авто', full: true, required: true },
-        { key: 'amount', label: 'Сколько осталось выплатить', type: 'money', curKey: 'currency', full: true, required: true },
-        { key: 'payment', label: 'Платёж в месяц', type: 'number', hint: 'в той же валюте, необязательно' },
-        { key: 'note', label: 'Заметка', type: 'text' },
-      ],
+      title: d ? (start === 'owed' ? 'Мне должны' : 'Мой долг') : start === 'owed' ? 'Кто-то должен мне' : 'Новый долг или кредит',
+      data: d ? { ...d, direction: start } : { direction: start, currency: cur() },
+      fields: (v) => {
+        const owed = v.direction === 'owed';
+        return [
+          { key: 'direction', label: 'Кто кому должен', type: 'select', rerender: true, full: true, options: [
+            { value: 'owe', label: 'Я должен (кредит, рассрочка, заём)' },
+            { value: 'owed', label: 'Мне должны (дал в долг)' },
+          ] },
+          { key: 'name', label: owed ? 'Кто должен' : 'Название', placeholder: owed ? 'Например: Сергей, брат' : 'Например: Кредит на авто', full: true, required: true },
+          { key: 'amount', label: owed ? 'Сколько ещё должны вернуть' : 'Сколько осталось выплатить', type: 'money', curKey: 'currency', full: true, required: true },
+          { key: 'payment', label: owed ? 'Возвращают в месяц' : 'Платёж в месяц', type: 'number', hint: 'в той же валюте, необязательно' },
+          { key: 'due', label: 'Вернуть до', type: 'date', hint: 'необязательно' },
+          { key: 'note', label: 'Заметка', type: 'text', full: true },
+        ];
+      },
       onSave(v) {
-        if (d) Object.assign(d, v); else state.debts.push({ id: uid(), ...v });
+        if (d) { Object.keys(d).forEach((k) => k !== 'id' && delete d[k]); Object.assign(d, v); } else state.debts.push({ id: uid(), ...v });
         save();
         toast('Сохранено');
       },
@@ -1246,7 +1279,10 @@
       { id: uid(), kind: 'movable', type: 'Автомобиль', name: 'Toyota RAV4, 2019', value: 21500, currency: 'USD', purchasePrice: 26000, purchaseDate: '2022-03-10', note: '' },
       { id: uid(), kind: 'movable', type: 'Техника и электроника', name: 'Ноутбук, телефон, техника', value: 65000, currency: 'UAH', purchasePrice: '', purchaseDate: '', note: '' },
     ];
-    s.debts = [{ id: uid(), name: 'Рассрочка за ремонт', amount: 48000, currency: 'UAH', payment: 8000, note: '' }];
+    s.debts = [
+      { id: uid(), direction: 'owe', name: 'Рассрочка за ремонт', amount: 48000, currency: 'UAH', payment: 8000, due: '2027-05-01', note: '' },
+      { id: uid(), direction: 'owed', name: 'Сергей (одолжил на машину)', amount: 1500, currency: 'USD', payment: '', due: '2027-03-01', note: '' },
+    ];
     s.investments = [
       { id: uid(), type: 'crypto', symbol: 'BTC', name: 'Binance', qty: 0.15, price: 95000, currency: 'USD', invested: 9800, note: '' },
       { id: uid(), type: 'crypto', symbol: 'ETH', name: 'Холодный кошелёк', qty: 2.5, price: 3400, currency: 'USD', invested: 7200, note: '' },
@@ -1263,13 +1299,13 @@
     if ((state.months.length || state.assets.length || state.investments.length) && !confirm('Пример заменит ваши текущие данные. Продолжить?')) return;
     state = demoState();
     // история капитала для примера: плавный рост к текущему значению
-    const a = totalAssets('USD'), i = totalInvest('USD'), d = totalDebts('USD');
+    const a = totalAssets('USD'), i = totalInvest('USD'), d = totalDebts('USD'), r = totalOwed('USD');
     let seed = 5;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
     const keys = monthRange('2025-01', addMonths(monthKey(), -1));
     keys.forEach((k, ix) => {
       const p = ix / keys.length;
-      state.snapshots[k] = { a: Math.round(a * (1.04 - 0.04 * p)), i: Math.round(i * (0.35 + 0.65 * p) * (1 + (rnd() - 0.5) * 0.08)), d: Math.round(d * (2.2 - 1.2 * p)) };
+      state.snapshots[k] = { a: Math.round(a * (1.04 - 0.04 * p)), i: Math.round(i * (0.35 + 0.65 * p) * (1 + (rnd() - 0.5) * 0.08)), r: ix >= keys.length - 6 ? Math.round(r) : 0, d: Math.round(d * (2.2 - 1.2 * p)) };
     });
     save();
     ui.period = '12m';
@@ -1308,7 +1344,7 @@
       case 'edit-contract': openContractForm(id); break;
       case 'add-asset': openAssetForm(null, v); break;
       case 'edit-asset': openAssetForm(id); break;
-      case 'add-debt': openDebtForm(); break;
+      case 'add-debt': openDebtForm(null, v); break;
       case 'edit-debt': openDebtForm(id); break;
       case 'add-inv': openInvForm(); break;
       case 'edit-inv': openInvForm(id); break;
