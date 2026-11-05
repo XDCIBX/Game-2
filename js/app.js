@@ -13,7 +13,7 @@
   const sum = (arr, f = (x) => x) => arr.reduce((a, x) => a + (f(x) || 0), 0);
 
   /* ================= Справочники ================= */
-  const APP_VERSION = '1.3';
+  const APP_VERSION = '1.4';
   const STORAGE_KEY = 'seafin-data-v1';
   const CURRENCIES = {
     USD: { symbol: '$', name: 'Доллар США' },
@@ -325,12 +325,12 @@
   }
 
   /* ================= Общие элементы интерфейса ================= */
-  function toast(msg, type = '') {
+  function toast(msg, type = '', ms = 3200) {
     const t = $('#toast');
     t.textContent = msg;
     t.className = 'toast show ' + type;
     clearTimeout(toast._t);
-    toast._t = setTimeout(() => (t.className = 'toast'), 3200);
+    toast._t = setTimeout(() => (t.className = 'toast'), ms);
   }
 
   const kpi = (label, value, sub = '', cls = '') =>
@@ -989,7 +989,7 @@
           { key: 'type', label: 'Вид', type: 'select', rerender: true, full: true, options: Object.entries(INV_TYPES).map(([k, m]) => ({ value: k, label: m.name })) },
         ];
         if (v.type === 'crypto') f.push(
-          { key: 'symbol', label: 'Монета', placeholder: 'BTC', list: Object.keys(COINS), hint: 'для BTC, ETH, USDT и др. цену можно обновить онлайн' },
+          { key: 'symbol', label: 'Монета (тикер)', placeholder: 'BTC', list: Object.keys(COINS), hint: 'BTC, ETH, USDT, SOL… — тогда цену можно обновить онлайн' },
           { key: 'name', label: 'Название / где хранится', placeholder: 'Например: Binance, холодный кошелёк' },
           { key: 'qty', label: 'Количество монет', type: 'number', required: true },
           { key: 'price', label: 'Цена 1 монеты сейчас', type: 'money', curKey: 'currency' },
@@ -1012,7 +1012,7 @@
         return f;
       },
       onSave(v) {
-        if (v.type === 'crypto') { v.symbol = String(v.symbol || '').trim().toUpperCase(); if (!v.name) v.name = v.symbol; }
+        if (v.type === 'crypto') { v.symbol = coinSymbol(v.symbol); if (!v.name) v.name = v.symbol; }
         if (inv) { Object.keys(inv).forEach((k) => k !== 'id' && delete inv[k]); Object.assign(inv, v); } else state.investments.push({ id: uid(), ...v });
         save();
         toast('Инвестиция сохранена');
@@ -1181,28 +1181,68 @@
     }
   }
 
-  async function updateCrypto() {
-    const items = state.investments.filter((i) => i.type === 'crypto' && COINS[String(i.symbol || '').toUpperCase()]);
-    if (!items.length) { toast('Нет монет, для которых известна онлайн-цена. Введите цену вручную.', 'error'); return; }
-    const ids = [...new Set(items.map((i) => COINS[i.symbol.toUpperCase()]))];
-    try {
-      toast('Загружаю цены…');
-      const data = await fetchJSON(`https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(',')}&vs_currencies=usd`);
-      let n = 0;
-      items.forEach((i) => {
-        const p = data[COINS[i.symbol.toUpperCase()]];
-        if (p && p.usd) {
-          if (i.currency && i.currency !== 'USD' && num(i.invested)) i.invested = toUSD(i.invested, i.currency);
-          i.price = p.usd; i.currency = 'USD'; n++;
-        }
-      });
-      state.settings.cryptoUpdated = new Date().toISOString();
-      save();
-      render();
-      toast(`Цены обновлены (${n})`);
-    } catch (e) {
-      toast('Не удалось загрузить цены — нет интернета? Введите цену вручную.', 'error');
+  // Названия монет, которые люди часто пишут вместо тикера
+  const COIN_ALIASES = {
+    BITCOIN: 'BTC', 'БИТКОИН': 'BTC', 'БИТКОЙН': 'BTC', 'БИТОК': 'BTC', XBT: 'BTC',
+    ETHEREUM: 'ETH', ETHER: 'ETH', 'ЭФИР': 'ETH', 'ЭФИРИУМ': 'ETH', 'ЕФІР': 'ETH',
+    TETHER: 'USDT', 'ТЕЗЕР': 'USDT', 'USD COIN': 'USDC', BINANCE: 'BNB', 'BINANCE COIN': 'BNB',
+    SOLANA: 'SOL', 'СОЛАНА': 'SOL', RIPPLE: 'XRP', TONCOIN: 'TON', 'ТОН': 'TON', CARDANO: 'ADA',
+    DOGECOIN: 'DOGE', 'ДОГИКОИН': 'DOGE', TRON: 'TRX', LITECOIN: 'LTC', 'ЛАЙТКОИН': 'LTC', POLKADOT: 'DOT',
+  };
+  function coinSymbol(raw) {
+    let x = String(raw || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    x = x.replace(/[\s_\-(]*(TRC|ERC|BEP|SPL)[\s-]?20\)?$/, '').trim(); // USDT TRC20 → USDT
+    return COIN_ALIASES[x] || x;
+  }
+
+  // Цена 1 монеты в долларах: пробуем несколько бесплатных сервисов по очереди
+  const PRICE_SOURCES = [
+    { name: 'Coinbase', url: (c) => `https://api.coinbase.com/v2/exchange-rates?currency=${c}`, read: (d) => d && d.data && d.data.rates && +d.data.rates.USD },
+    { name: 'Binance', skip: (c) => c === 'USDT', url: (c) => `https://api.binance.com/api/v3/ticker/price?symbol=${c}USDT`, read: (d) => d && +d.price },
+    { name: 'CryptoCompare', url: (c) => `https://min-api.cryptocompare.com/data/price?fsym=${c}&tsyms=USD`, read: (d) => d && +d.USD },
+    { name: 'CoinGecko', skip: (c) => !COINS[c], url: (c) => `https://api.coingecko.com/api/v3/simple/price?ids=${COINS[c]}&vs_currencies=usd`, read: (d, c) => d && d[COINS[c]] && +d[COINS[c]].usd },
+  ];
+  async function coinPrice(sym) {
+    let reached = false; // хоть один сервис ответил (значит интернет есть)
+    for (const src of PRICE_SOURCES) {
+      if (src.skip && src.skip(sym)) continue;
+      try {
+        const res = await fetch(src.url(encodeURIComponent(sym)), { signal: AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
+        reached = true;
+        if (!res.ok) continue;
+        const p = src.read(await res.json(), sym);
+        if (p > 0 && isFinite(p)) return { price: p, source: src.name };
+      } catch (e) { /* сервис недоступен — пробуем следующий */ }
     }
+    return { price: null, reached };
+  }
+
+  async function updateCrypto() {
+    const items = state.investments.filter((i) => i.type === 'crypto');
+    const noSymbol = items.filter((i) => !coinSymbol(i.symbol));
+    const withSymbol = items.filter((i) => coinSymbol(i.symbol));
+    if (!withSymbol.length) { toast('У монет не указан тикер (BTC, ETH, USDT…). Откройте монету и заполните поле «Монета».', 'error', 6000); return; }
+    if (!navigator.onLine) { toast('Нет подключения к интернету. Цены можно ввести вручную.', 'error', 5000); return; }
+    const btn = $('[data-action="update-crypto"]');
+    if (btn) { btn.disabled = true; btn.lastChild.textContent = ' Загружаю цены…'; }
+    const syms = [...new Set(withSymbol.map((i) => coinSymbol(i.symbol)))];
+    const results = Object.fromEntries(await Promise.all(syms.map(async (c) => [c, await coinPrice(c)])));
+    const ok = [], failed = [];
+    withSymbol.forEach((i) => {
+      const c = coinSymbol(i.symbol);
+      const r = results[c];
+      if (r.price) {
+        if (i.currency && i.currency !== 'USD' && num(i.invested)) i.invested = toUSD(i.invested, i.currency);
+        i.symbol = c; i.price = r.price; i.currency = 'USD';
+        if (!ok.includes(c)) ok.push(c);
+      } else if (!failed.includes(c)) failed.push(c);
+    });
+    if (ok.length) { state.settings.cryptoUpdated = new Date().toISOString(); save(); }
+    render();
+    const nobody = failed.length && !ok.length && syms.every((c) => !results[c].reached);
+    if (nobody) toast('Сервисы цен недоступны: нет интернета, или их блокирует VPN / блокировщик рекламы. Попробуйте позже или введите цену вручную.', 'error', 8000);
+    else if (failed.length) toast(`${ok.length ? `Обновлено: ${ok.join(', ')}. ` : ''}Не нашлась цена для: ${failed.join(', ')} — проверьте тикер монеты или введите цену вручную.`, 'error', 8000);
+    else toast(`Цены обновлены: ${ok.join(', ')}${noSymbol.length ? ` (у ${noSymbol.length} монет не указан тикер)` : ''}`, '', 4000);
   }
 
   /* ================= Резервная копия ================= */
