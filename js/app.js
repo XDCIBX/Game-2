@@ -13,7 +13,7 @@
   const sum = (arr, f = (x) => x) => arr.reduce((a, x) => a + (f(x) || 0), 0);
 
   /* ================= Справочники ================= */
-  const APP_VERSION = '1.4';
+  const APP_VERSION = '1.5';
   const STORAGE_KEY = 'seafin-data-v1';
   const CURRENCIES = {
     USD: { symbol: '$', name: 'Доллар США' },
@@ -1036,6 +1036,9 @@
           </form>
           <div class="btn-row mt"><button class="btn primary" data-action="save-rates">Сохранить курсы</button><button class="btn" data-action="update-rates">${icon('refresh')} Загрузить из интернета</button></div>
           <p class="hint mt">Без интернета (например, в рейсе) просто введите курс вручную. Для пересчёта используется текущий курс.</p>`)}
+        ${card('Обновление приложения', `у вас версия ${APP_VERSION}`, `
+          <div class="btn-row"><button class="btn" data-action="check-update">${icon('refresh')} Проверить обновления</button><button class="btn" data-action="hard-reload">Перезагрузить приложение</button></div>
+          <p class="hint mt">Приложение само проверяет обновления при запуске и при возвращении в него. Ваши данные при обновлении не теряются.</p>`)}
         ${card('Оформление', '', `<div class="seg">${themeOpt('auto', 'Как в системе')}${themeOpt('light', 'Светлая')}${themeOpt('dark', 'Тёмная')}</div>`)}
         ${card('Резервная копия', 'данные хранятся только в этом браузере', `
           <div class="btn-row"><button class="btn primary" data-action="export">Сохранить копию (файл)</button><button class="btn" data-action="import">Загрузить из файла</button></div>
@@ -1246,11 +1249,23 @@
   }
 
   /* ================= Резервная копия ================= */
-  function exportData() {
+  async function exportData() {
+    const name = `morskoy-budget-${isoDate(new Date())}.json`;
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    // На телефоне открываем меню «Поделиться»: «Сохранить в Файлы», Telegram, почта и т. д.
+    try {
+      const file = new File([blob], name, { type: 'application/json' });
+      if (window.matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Морской бюджет — резервная копия' });
+        toast('Резервная копия готова');
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // пользователь закрыл меню
+    }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `morskoy-budget-${isoDate(new Date())}.json`;
+    a.download = name;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
@@ -1400,6 +1415,8 @@
         save(); render(); toast('Курсы сохранены'); break;
       }
       case 'export': exportData(); break;
+      case 'check-update': checkForUpdate(true); break;
+      case 'hard-reload': reloadFresh(String(Date.now())); break;
       case 'import': $('#importFile').click(); break;
       case 'demo': loadDemo(); break;
       case 'reset':
@@ -1432,6 +1449,54 @@
   });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { applyTheme(); render(); });
 
+  /* ================= Обновление приложения ================= */
+  // Приложение на экране «Домой» iPhone хранит старую копию страницы и не имеет кнопки «обновить».
+  // Поэтому сверяем версию с файлом version.json на сайте и при необходимости
+  // перезагружаем страницу по новому адресу (?v=…), который точно не лежит в кэше.
+  function reloadFresh(v) {
+    location.replace(location.pathname + '?v=' + encodeURIComponent(v) + location.hash);
+  }
+  function showUpdateBar(v) {
+    let bar = $('#updateBar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'updateBar';
+      bar.className = 'update-bar';
+      document.body.appendChild(bar);
+    }
+    bar.innerHTML = `<span>Вышла новая версия приложения (${esc(v)})</span><button type="button" class="btn small primary">Обновить</button>`;
+    bar.querySelector('button').addEventListener('click', () => reloadFresh(v));
+  }
+  let checking = false;
+  async function checkForUpdate(manual) {
+    if (checking || location.protocol === 'file:') {
+      if (manual && location.protocol === 'file:') toast('Файл открыт с компьютера — обновления приходят только на сайте.');
+      return;
+    }
+    checking = true;
+    try {
+      const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const v = String((await res.json()).version || '');
+      if (!v || v === APP_VERSION) {
+        if (manual) toast(`У вас последняя версия — ${APP_VERSION}`);
+        return;
+      }
+      // Без открытых форм обновляемся сразу (один раз на версию, чтобы не зациклиться), иначе — предлагаем
+      let tried = null;
+      try { tried = sessionStorage.getItem('seafin-update-tried'); sessionStorage.setItem('seafin-update-tried', v); } catch (e) { /* ignore */ }
+      if ((manual || tried !== v) && !modalApi) reloadFresh(v);
+      else showUpdateBar(v);
+    } catch (e) {
+      if (manual) toast('Не удалось проверить обновления — нет интернета?', 'error');
+    } finally {
+      checking = false;
+    }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && navigator.onLine) checkForUpdate(false);
+  });
+
   /* ================= Старт ================= */
   $('#appVersion').textContent = 'Версия ' + APP_VERSION;
   applyTheme();
@@ -1440,4 +1505,5 @@
   // Курсы обновляются автоматически раз в 12 часов, если есть интернет и курс не задан вручную
   const last = state.settings.ratesUpdated ? new Date(state.settings.ratesUpdated) : null;
   if (state.settings.autoRates !== false && navigator.onLine && (!last || Date.now() - last > 12 * 3600000)) updateRates(true);
+  if (navigator.onLine) checkForUpdate(false);
 })();
